@@ -56,6 +56,9 @@ pub fn tick(self: *Camera, dt: f32) void {
         self.yaw += mouse_delta_x;
         self.pitch = std.math.clamp(self.pitch + mouse_delta_y, -89.0, 89.0);
 
-        self.front = zalgebra.Vec3.fromSlice(&[_]f32{ @cos(zalgebra.toRadians(self.yaw)) * @cos(zalgebra.toRadians(self.pitch)), @sin(zalgebra.toRadians(self.pitch)), @sin(zalgebra.toRadians(self.yaw)) * @cos(zalgebra.toRadians(self.pitch)) });
+        self.direction.xMut().* += mouse_delta_x;
+        self.direction.yMut().* += mouse_delta_y;
+
+        self.front = zalgebra.Vec3.fromSlice(&[_]f32{ @cos(zalgebra.toRadians(self.yaw)) * @cos(zalgebra.toRadians(self.pitch)), @sin(zalgebra.toRadians(self.pitch)), @sin(zalgebra.toRadians(self.yaw)) * @cos(zalgebra.toRadians(self.pitch)) }).norm();
     }
 }

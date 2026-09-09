@@ -26,7 +26,6 @@ pub const Chunk = struct {
         vertices: std.ArrayList(f32),
         vao: u32,
         vbo: u32,
-        faces: usize,
 
         pub fn init(chunk: *const Chunk) Mesh {
             var vao: u32 = 0;
@@ -51,7 +50,6 @@ pub const Chunk = struct {
                 .vertices = .empty,
                 .vao = vao,
                 .vbo = vbo,
-                .faces = 0,
             };
         }
 
@@ -60,8 +58,19 @@ pub const Chunk = struct {
             c.glDeleteVertexArrays(1, &self.vao);
         }
 
-        pub fn generate(self: *Mesh, allocator: std.mem.Allocator) !void {
-            self.faces = 0;
+        pub fn generate(self: *Mesh, allocator: std.mem.Allocator, level: *const Level) !void {
+            std.log.debug("began mesh gen..", .{});
+
+            self.vertices.clearRetainingCapacity();
+
+            const left_chunk = level.chunks.get(self.chunk.relativePosition(1, 0, 0));
+            const right_chunk = level.chunks.get(self.chunk.relativePosition(-1, 0, 0));
+
+            const up_chunk = level.chunks.get(self.chunk.relativePosition(0, 1, 0));
+            const down_chunk = level.chunks.get(self.chunk.relativePosition(0, -1, 0));
+
+            const front_chunk = level.chunks.get(self.chunk.relativePosition(0, 0, 1));
+            const back_chunk = level.chunks.get(self.chunk.relativePosition(0, 0, -1));
 
             for (0..self.chunk.tiles.len) |tile_idx| {
                 const x = tile_idx % width;
@@ -82,61 +91,74 @@ pub const Chunk = struct {
                     if (self.chunk.isTileTransluscent(x - 1, y, z)) {
                         try self.addFace(tile_type, .left, world_x, world_y, world_z, allocator);
                     }
-                } else {
-                    try self.addFace(tile_type, .left, world_x, world_y, world_z, allocator);
+                } else if (left_chunk) |left_c| {
+                    if (left_c.isTileTransluscent(width - 1, y, z)) {
+                        try self.addFace(tile_type, .left, world_x, world_y, world_z, allocator);
+                    }
                 }
 
-                if (x < Chunk.width - 1) {
+                if (x < width - 1) {
                     if (self.chunk.isTileTransluscent(x + 1, y, z)) {
                         try self.addFace(tile_type, .right, world_x, world_y, world_z, allocator);
                     }
-                } else {
-                    try self.addFace(tile_type, .right, world_x, world_y, world_z, allocator);
+                } else if (right_chunk) |right_c| {
+                    if (right_c.isTileTransluscent(0, y, z)) {
+                        try self.addFace(tile_type, .right, world_x, world_y, world_z, allocator);
+                    }
                 }
 
                 if (y > 0) {
                     if (self.chunk.isTileTransluscent(x, y - 1, z)) {
                         try self.addFace(tile_type, .bottom, world_x, world_y, world_z, allocator);
                     }
-                } else {
-                    try self.addFace(tile_type, .bottom, world_x, world_y, world_z, allocator);
+                } else if (down_chunk) |down_c| {
+                    if (down_c.isTileTransluscent(x, height - 1, z)) {
+                        try self.addFace(tile_type, .bottom, world_x, world_y, world_z, allocator);
+                    }
                 }
 
-                if (y < Chunk.height - 1) {
+                if (y < height - 1) {
                     if (self.chunk.isTileTransluscent(x, y + 1, z)) {
                         try self.addFace(tile_type, .top, world_x, world_y, world_z, allocator);
                     }
-                } else {
-                    try self.addFace(tile_type, .top, world_x, world_y, world_z, allocator);
+                } else if (up_chunk) |up_c| {
+                    if (up_c.isTileTransluscent(x, 0, z)) {
+                        try self.addFace(tile_type, .top, world_x, world_y, world_z, allocator);
+                    }
                 }
 
                 if (z > 0) {
                     if (self.chunk.isTileTransluscent(x, y, z - 1)) {
                         try self.addFace(tile_type, .front, world_x, world_y, world_z, allocator);
                     }
-                } else {
-                    try self.addFace(tile_type, .front, world_x, world_y, world_z, allocator);
+                } else if (front_chunk) |front_c| {
+                    if (front_c.isTileTransluscent(x, y, depth - 1)) {
+                        try self.addFace(tile_type, .front, world_x, world_y, world_z, allocator);
+                    }
                 }
 
-                if (z < Chunk.depth - 1) {
+                if (z < depth - 1) {
                     if (self.chunk.isTileTransluscent(x, y, z + 1)) {
                         try self.addFace(tile_type, .back, world_x, world_y, world_z, allocator);
                     }
-                } else {
-                    try self.addFace(tile_type, .back, world_x, world_y, world_z, allocator);
+                } else if (back_chunk) |back_c| {
+                    if (back_c.isTileTransluscent(x, y, 0)) {
+                        try self.addFace(tile_type, .back, world_x, world_y, world_z, allocator);
+                    }
                 }
             }
+
+            std.log.debug("completed mesh gen..", .{});
         }
 
         pub fn upload(self: *const Mesh) void {
             c.glBindVertexArray(self.vao);
             c.glBindBuffer(c.GL_ARRAY_BUFFER, self.vbo);
 
-            // TODO: perf test vbo "orphaning"
             c.glBufferSubData(
                 c.GL_ARRAY_BUFFER,
                 0,
-                @sizeOf(f32) * @as(i64, @intCast(self.faces * 36)),
+                @sizeOf(f32) * @as(i64, @intCast(self.vertices.items.len)),
                 self.vertices.items.ptr,
             );
         }
@@ -144,14 +166,13 @@ pub const Chunk = struct {
         pub fn addFace(self: *Mesh, tile_type: tile.Tile, face: tile.Face, x: f32, y: f32, z: f32, allocator: std.mem.Allocator) !void {
             const tile_vertices = tile.vertices(tile_type, face, (x), (y), (z));
             try self.vertices.appendSlice(allocator, tile_vertices[0..]);
-            self.faces += 1;
         }
 
         pub fn blit(self: *Mesh) void {
             c.glBindVertexArray(self.vao);
             c.glBindBuffer(c.GL_ARRAY_BUFFER, self.vbo);
 
-            c.glDrawArrays(c.GL_TRIANGLES, 0, @as(i32, @intCast(self.faces)) * 6);
+            c.glDrawArrays(c.GL_TRIANGLES, 0, @as(i32, @intCast(@divTrunc(self.vertices.items.len, 6))));
         }
     };
 
@@ -207,6 +228,14 @@ pub const Chunk = struct {
 
     pub inline fn isTileTransluscent(self: *const Chunk, x: usize, y: usize, z: usize) bool {
         return self.tileAt(x, y, z) == .air;
+    }
+
+    inline fn relativePosition(self: *const Chunk, ox: i32, oy: i32, oz: i32) Position {
+        return .{
+            .x = self.position.x + ox,
+            .y = self.position.y + oy,
+            .z = self.position.z + oz
+        };
     }
 };
 
@@ -295,7 +324,7 @@ pub const Level = struct {
             errdefer g.cancel(io);
 
             while (self.mesh_queue.pop()) |mesh| {
-                g.async(io, safeMeshGenerate, .{ mesh, allocator });
+                g.async(io, safeMeshGenerate, .{ mesh, allocator, self });
                 try chunks_to_upload.append(allocator, mesh);
             }
 
@@ -316,8 +345,8 @@ pub const Level = struct {
     }
 };
 
-fn safeMeshGenerate(mesh: *Chunk.Mesh, allocator: std.mem.Allocator) void {
-    mesh.generate(allocator) catch |err| {
+fn safeMeshGenerate(mesh: *Chunk.Mesh, allocator: std.mem.Allocator, level: *const Level) void {
+    mesh.generate(allocator, level) catch |err| {
         std.log.err("{}", .{err});
     };
 }

@@ -123,6 +123,10 @@ pub const Window = struct {
         return c.glfwWindowShouldClose(window.handle) == c.GLFW_FALSE;
     }
 
+    pub fn isMouseDown(button: i32) bool {
+        return c.glfwGetMouseButton(window.handle, button) == c.GLFW_PRESS;
+    }
+
     pub fn swapBuffers() void {
         c.glfwSwapBuffers(window.handle);
     }

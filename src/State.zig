@@ -8,6 +8,7 @@ const zalgebra = @import("zalgebra");
 const Camera = @import("Camera.zig");
 const Level = @import("level.zig").Level;
 const Chunk = @import("level.zig").Chunk;
+const Ray = @import("Ray.zig");
 
 const State = @This();
 
@@ -27,11 +28,11 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io) !State {
 
     shader.bind();
 
-    shader.setMat4("u_proj", zalgebra.perspective(60.0, 1280.0 / 720.0, 0.1, 100.0));
+    shader.setMat4("u_proj", zalgebra.perspective(60.0, 1280.0 / 720.0, 0.1, 1000.0));
 
     return .{
         .shader = shader,
-        .camera = .init(2.0, 2.0, 2.0),
+        .camera = .init(8.0, 14.0, 8.0),
         .level = try .init(allocator)
     };
 }
@@ -43,15 +44,42 @@ pub fn deinit(self: *State) void {
 }
 
 pub fn run(self: *State, allocator: std.mem.Allocator, io: std.Io) !void {
+    var last_time: f32 = @floatCast(c.glfwGetTime());
+
     while (Window.isGood()) {
         if (Window.isKeyDown(c.GLFW_KEY_ESCAPE)) {
             break;
         }
 
-
         try self.level.doChunkWork(allocator, io);
 
         const dt = Window.deltaTime();
+
+        if (Window.isMouseDown(c.GLFW_MOUSE_BUTTON_LEFT) and @as(f32, @floatCast(c.glfwGetTime())) - last_time > 0.2) {
+            last_time = @floatCast(c.glfwGetTime());
+
+            var ray: Ray = .init(self.camera.position, self.camera.direction);
+
+            while (ray.distance() < 6.0) : (ray.step(0.05)) {
+                const tile_x: usize = @as(usize, @trunc(ray.end.x())) % 16;
+                const tile_y: usize = @as(usize, @trunc(ray.end.y())) % 16;
+                const tile_z: usize = @as(usize, @trunc(ray.end.z())) % 16;
+
+                const chunk = self.level.chunks.get(.{ .x = @trunc(ray.end.x() / 16.0), .y = @trunc(ray.end.y() / 16.0), .z = @trunc(ray.end.z() / 16.0) }).?;
+
+                const tile_type = chunk.tileAt(tile_x, tile_y, tile_z);
+
+                if (tile_type == .air) {
+                    continue;
+                }
+
+                chunk.setTile(tile_x, tile_y, tile_z, .air);
+
+                try self.level.mesh_queue.append(allocator, &chunk.mesh);
+
+                break;
+            }
+        }
 
         const old_player_chunk_pos: Chunk.Position = .fromTilePosition(
             @trunc(self.camera.position.x()),
