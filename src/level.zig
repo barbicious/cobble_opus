@@ -1,37 +1,34 @@
 const tile = @import("tile.zig");
 const c = @import("c");
+const std = @import("std");
 
 pub const Chunk = struct {
+    pub const Position = struct {
+        x: i32,
+        y: i32,
+        z: i32,
+
+        pub fn fromTilePosition(x: i32, y: i32, z: i32) Position {
+            return .{
+                .x = @divTrunc(x, @as(i32, @intCast(width))),
+                .y = @divTrunc(y, @as(i32, @intCast(height))),
+                .z = @divTrunc(z, @as(i32, @intCast(depth))),
+            };
+        }
+
+        pub fn eql(self: Position, other: Position) bool {
+            return self.x == other.x and self.y == other.y and self.z == other.z;
+        }
+    };
+    
     pub const Mesh = struct {
         chunk: *const Chunk,
-        vertices: [(width * height * depth) * tile.max_vertices]f32,
+        vertices: std.ArrayList(f32),
         vao: u32,
         vbo: u32,
+        faces: usize,
 
         pub fn init(chunk: *const Chunk) Mesh {
-            var tiles: usize = 0;
-
-            var vertices: [(width * height * depth) * 216]f32 = undefined;
-
-            for (0..chunk.tiles.len) |tile_idx| {
-                const x = tile_idx % width;
-                const z = (tile_idx / width) % height;
-                const y = tile_idx / (width * height);
-
-                const tile_type = chunk.tiles[tile_idx];
-
-                const tile_vertices = tile.vertices(tile_type, .back, @floatFromInt(x), @floatFromInt(y), @floatFromInt(z))
-                    ++ tile.vertices(tile_type, .front, @floatFromInt(x), @floatFromInt(y), @floatFromInt(z))
-                    ++ tile.vertices(tile_type, .left, @floatFromInt(x), @floatFromInt(y), @floatFromInt(z))
-                    ++ tile.vertices(tile_type, .right, @floatFromInt(x), @floatFromInt(y), @floatFromInt(z))
-                    ++ tile.vertices(tile_type, .bottom, @floatFromInt(x), @floatFromInt(y), @floatFromInt(z))
-                    ++ tile.vertices(tile_type, .top, @floatFromInt(x), @floatFromInt(y), @floatFromInt(z));
-
-                @memcpy(vertices[(tiles * 216)..(tiles * 216 + 216)], tile_vertices[0..]);
-
-                tiles += 1;
-            }
-
             var vao: u32 = 0;
             c.glGenVertexArrays(1, &vao);
             c.glBindVertexArray(vao);
@@ -40,7 +37,7 @@ pub const Chunk = struct {
             c.glGenBuffers(1, &vbo);
             c.glBindBuffer(c.GL_ARRAY_BUFFER, vbo);
 
-            c.glBufferData(c.GL_ARRAY_BUFFER, @sizeOf(f32) * (width * height * depth) * 216, &vertices, c.GL_STREAM_DRAW);
+            c.glBufferData(c.GL_ARRAY_BUFFER, @sizeOf(f32) * (width * height * depth) * 216, null, c.GL_STREAM_DRAW);
 
             c.glVertexAttribPointer(0, 3, c.GL_FLOAT, c.GL_FALSE, 6 * @sizeOf(f32), @ptrFromInt(0));
             c.glEnableVertexAttribArray(0);
@@ -51,20 +48,110 @@ pub const Chunk = struct {
 
             return .{
                 .chunk = chunk,
-                .vertices = undefined,
+                .vertices = .empty,
                 .vao = vao,
                 .vbo = vbo,
+                .faces = 0,
             };
         }
 
-        pub fn deinit(self: Mesh) void {
+        pub fn deinit(self: *Mesh) void {
             c.glDeleteBuffers(1, &self.vbo);
             c.glDeleteVertexArrays(1, &self.vao);
         }
 
-        pub fn blit(self: Mesh) void {
-            _ = self;
-            c.glDrawArrays(c.GL_TRIANGLES, 0, (width * height * depth) * 216);
+        pub fn generate(self: *Mesh, allocator: std.mem.Allocator) !void {
+            self.faces = 0;
+
+            for (0..self.chunk.tiles.len) |tile_idx| {
+                const x = tile_idx % width;
+                const y = (tile_idx / width) % height;
+                const z = tile_idx / (width * height);
+
+                const tile_type = self.chunk.tiles[tile_idx];
+
+                if (tile_type == .air) {
+                    continue;
+                }
+                
+                const world_x = @as(f32, @floatFromInt(x)) + (@as(f32, @floatFromInt(width)) * @as(f32, @floatFromInt(self.chunk.position.x)));
+                const world_y = @as(f32, @floatFromInt(y)) + (@as(f32, @floatFromInt(height)) * @as(f32, @floatFromInt(self.chunk.position.y)));
+                const world_z = @as(f32, @floatFromInt(z)) + (@as(f32, @floatFromInt(depth)) * @as(f32, @floatFromInt(self.chunk.position.z)));
+
+                if (x > 0) {
+                    if (self.chunk.isTileTransluscent(x - 1, y, z)) {
+                        try self.addFace(tile_type, .left, world_x, world_y, world_z, allocator);
+                    }
+                } else {
+                    try self.addFace(tile_type, .left, world_x, world_y, world_z, allocator);
+                }
+
+                if (x < Chunk.width - 1) {
+                    if (self.chunk.isTileTransluscent(x + 1, y, z)) {
+                        try self.addFace(tile_type, .right, world_x, world_y, world_z, allocator);
+                    }
+                } else {
+                    try self.addFace(tile_type, .right, world_x, world_y, world_z, allocator);
+                }
+
+                if (y > 0) {
+                    if (self.chunk.isTileTransluscent(x, y - 1, z)) {
+                        try self.addFace(tile_type, .bottom, world_x, world_y, world_z, allocator);
+                    }
+                } else {
+                    try self.addFace(tile_type, .bottom, world_x, world_y, world_z, allocator);
+                }
+
+                if (y < Chunk.height - 1) {
+                    if (self.chunk.isTileTransluscent(x, y + 1, z)) {
+                        try self.addFace(tile_type, .top, world_x, world_y, world_z, allocator);
+                    }
+                } else {
+                    try self.addFace(tile_type, .top, world_x, world_y, world_z, allocator);
+                }
+
+                if (z > 0) {
+                    if (self.chunk.isTileTransluscent(x, y, z - 1)) {
+                        try self.addFace(tile_type, .front, world_x, world_y, world_z, allocator);
+                    }
+                } else {
+                    try self.addFace(tile_type, .front, world_x, world_y, world_z, allocator);
+                }
+
+                if (z < Chunk.depth - 1) {
+                    if (self.chunk.isTileTransluscent(x, y, z + 1)) {
+                        try self.addFace(tile_type, .back, world_x, world_y, world_z, allocator);
+                    }
+                } else {
+                    try self.addFace(tile_type, .back, world_x, world_y, world_z, allocator);
+                }
+            }
+        }
+
+        pub fn upload(self: *const Mesh) void {
+            c.glBindVertexArray(self.vao);
+            c.glBindBuffer(c.GL_ARRAY_BUFFER, self.vbo);
+
+            // TODO: perf test vbo "orphaning"
+            c.glBufferSubData(
+                c.GL_ARRAY_BUFFER,
+                0,
+                @sizeOf(f32) * @as(i64, @intCast(self.faces * 36)),
+                self.vertices.items.ptr,
+            );
+        }
+
+        pub fn addFace(self: *Mesh, tile_type: tile.Tile, face: tile.Face, x: f32, y: f32, z: f32, allocator: std.mem.Allocator) !void {
+            const tile_vertices = tile.vertices(tile_type, face, (x), (y), (z));
+            try self.vertices.appendSlice(allocator, tile_vertices[0..]);
+            self.faces += 1;
+        }
+
+        pub fn blit(self: *Mesh) void {
+            c.glBindVertexArray(self.vao);
+            c.glBindBuffer(c.GL_ARRAY_BUFFER, self.vbo);
+
+            c.glDrawArrays(c.GL_TRIANGLES, 0, @as(i32, @intCast(self.faces)) * 6);
         }
     };
 
@@ -73,22 +160,164 @@ pub const Chunk = struct {
     const depth: u32 = 16;
 
     tiles: [width * height * depth]tile.Tile,
+    position: Position,
     mesh: Mesh,
+    flags: struct {
+        dirty: bool
+    },
 
-    pub fn init(chunk: *Chunk) void {
-        var tiles: [width * height * depth]tile.Tile = [_]tile.Tile{ .cobblestone } ** (width * height * depth);
-
-        @memcpy(tiles[(width * depth * 15)..(width * depth * 16)], &[_]tile.Tile{ .grass } ** (width * depth));
+    pub fn init(chunk: *Chunk, position: Position) void {
+        const tiles: [width * height * depth]tile.Tile = [_]tile.Tile{ .air } ** (width * height * depth);
 
         chunk.tiles = tiles;
+
+        for (0..depth) |z| {
+            for (0..width) |x| {
+                for (0..height) |y| {
+                    var tile_type: tile.Tile = .air;
+
+                    const world_height = @as(i32, @intCast(y)) + (position.y * @as(i32, @intCast(height)));
+
+                    if (world_height < 9) {
+                        tile_type = .cobblestone;
+                    } else if (world_height < 10) {
+                        tile_type = .grass;
+                    }
+
+                    chunk.setTile(x, y, z, tile_type);
+                }
+            }
+        }
+
+        chunk.position = position;
         chunk.mesh = .init(chunk);
     }
 
-    pub inline fn tileAt(self: Chunk, x: usize, y: usize, z: usize) tile.Tile {
-        return self.tiles[x + width * (y + height * z)];
+    pub inline fn idx(x: usize, y: usize, z: usize) usize {
+        return x + width * (y + height * z);
     }
 
-    pub inline fn setTile(self: Chunk, x: usize, y: usize, z: usize, placed_tile: tile.Tile) void {
-        self.tiles[x + width * (y + height * z)] = placed_tile;
+    pub inline fn tileAt(self: *const Chunk, x: usize, y: usize, z: usize) tile.Tile {
+        return self.tiles[Chunk.idx(x, y, z)];
+    }
+
+    pub inline fn setTile(self: *Chunk, x: usize, y: usize, z: usize, placed_tile: tile.Tile) void {
+        self.tiles[Chunk.idx(x, y, z)] = placed_tile;
+    }
+
+    pub inline fn isTileTransluscent(self: *const Chunk, x: usize, y: usize, z: usize) bool {
+        return self.tileAt(x, y, z) == .air;
     }
 };
+
+pub const Level = struct {
+    const render_distance: i8 = 5;
+    
+    chunks: std.AutoHashMap(Chunk.Position, *Chunk),
+    mesh_queue: std.ArrayList(*Chunk.Mesh),
+    
+    pub fn init(allocator: std.mem.Allocator) !Level {
+        var chunks: std.AutoHashMap(Chunk.Position, *Chunk) = .init(allocator);
+        var mesh_queue: std.ArrayList(*Chunk.Mesh) = .empty;
+
+        var z: i8 = -render_distance;
+        while (z <= render_distance) : (z += 1) {
+            var x: i8 = -render_distance;
+            while (x <= render_distance) : (x += 1) {
+                var y: i8 = -render_distance;
+                while (y <= render_distance) : (y += 1) {
+                    const chunk = try allocator.create(Chunk);
+                    Chunk.init(chunk, .{ .x = x, .y = y, .z = z });
+                    try chunks.put(chunk.position, chunk);
+                    try mesh_queue.append(allocator, &chunk.mesh);
+                }
+            }
+        }
+
+        return .{
+            .chunks = chunks,
+            .mesh_queue = mesh_queue,
+        };
+    }
+
+    pub fn deinit(self: *Level) void {
+        self.chunks.deinit();
+    }
+
+    pub fn crossBoundaries(self: *Level, allocator: std.mem.Allocator, player_pos: Chunk.Position) !void {
+        {
+            var iter = self.chunks.valueIterator();
+
+            while (iter.next()) |chunk| {
+                chunk.*.flags.dirty = true;
+            }
+        }
+
+        var z: i32 = -render_distance + player_pos.z;
+        while (z <= render_distance + player_pos.z) : (z += 1) {
+
+            var x: i32 = -render_distance + player_pos.x;
+            while (x <= render_distance + player_pos.x) : (x += 1) {
+
+                var y: i32 = -render_distance + player_pos.y;
+                while (y <= render_distance + player_pos.y) : (y += 1) {
+
+                    const chunk_pos: Chunk.Position = .{ .x = x, .y = y, .z = z };
+
+                    if (self.chunks.get(chunk_pos)) |chunk| {
+                        chunk.flags.dirty = false;
+                    } else {
+                        const chunk = try allocator.create(Chunk);
+                        Chunk.init(chunk, .{ .x = x, .y = y, .z = z });
+                        try self.chunks.put(chunk.position, chunk);
+                        try self.mesh_queue.append(allocator, &chunk.mesh);
+                    }
+                }
+            }
+        }
+
+        {
+            var iter = self.chunks.valueIterator();
+
+            while (iter.next()) |chunk| {
+                if (chunk.*.flags.dirty) {
+                    _ = self.chunks.remove(chunk.*.position);
+                }
+            }
+        }
+    }
+    pub fn doChunkWork(self: *Level, allocator: std.mem.Allocator, io: std.Io) !void {
+        var chunks_to_upload: std.ArrayList(*Chunk.Mesh) = .empty;
+
+        if (self.mesh_queue.items.len > 0) {
+            var g: std.Io.Group = .init;
+
+            errdefer g.cancel(io);
+
+            while (self.mesh_queue.pop()) |mesh| {
+                g.async(io, safeMeshGenerate, .{ mesh, allocator });
+                try chunks_to_upload.append(allocator, mesh);
+            }
+
+            try g.await(io);
+        }
+
+        while (chunks_to_upload.pop()) |mesh| {
+            mesh.upload();
+        }
+    }
+
+    pub fn blit(self: *const Level) void {
+        var iter = self.chunks.valueIterator();
+
+        while (iter.next()) |chunk| {
+            chunk.*.mesh.blit();
+        }
+    }
+};
+
+fn safeMeshGenerate(mesh: *Chunk.Mesh, allocator: std.mem.Allocator) void {
+    mesh.generate(allocator) catch |err| {
+        std.log.err("{}", .{err});
+    };
+}

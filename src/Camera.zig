@@ -6,7 +6,7 @@ const std = @import("std");
 const Camera = @This();
 
 const up = zalgebra.Vec3.fromSlice(&[_]f32{ 0.0, 1.0, 0.0 });
-const speed: f32 = 2.5;
+const speed: f32 = 7.5;
 const sensitivity: f32 = 0.1;
 
 position: zalgebra.Vec3,

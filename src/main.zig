@@ -2,7 +2,9 @@ const std = @import("std");
 const State = @import("State.zig");
 
 pub fn main(init: std.process.Init) !void {
-    var state: State = try .init(init.arena.allocator(), init.io);
+    const allocator = init.arena.allocator();
+
+    var state: State = try .init(allocator, init.io);
     defer state.deinit();
-    state.run();
+    try state.run(allocator, init.io);
 }
