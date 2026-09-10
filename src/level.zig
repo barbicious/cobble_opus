@@ -77,8 +77,8 @@ pub const Chunk = struct {
             const left_chunk = level.chunks.get(self.chunk.relativePosition(-1, 0, 0));
             const right_chunk = level.chunks.get(self.chunk.relativePosition(1, 0, 0));
 
-            const up_chunk = level.chunks.get(self.chunk.relativePosition(0, 1, 0));
             const down_chunk = level.chunks.get(self.chunk.relativePosition(0, -1, 0));
+            const up_chunk = level.chunks.get(self.chunk.relativePosition(0, 1, 0));
 
             const front_chunk = level.chunks.get(self.chunk.relativePosition(0, 0, -1));
             const back_chunk = level.chunks.get(self.chunk.relativePosition(0, 0, 1));
@@ -326,7 +326,7 @@ pub const Level = struct {
         }
     }
     pub fn doChunkWork(self: *Level, allocator: std.mem.Allocator, io: std.Io) !void {
-        var chunks_to_upload: std.ArrayList(*Chunk.Mesh) = .empty;
+        var meshes_to_generate: std.ArrayList(*Chunk.Mesh) = .empty;
 
         if (self.generation_queue.items.len > 0) {
             var g: std.Io.Group = .init;
@@ -334,12 +334,27 @@ pub const Level = struct {
             errdefer g.cancel(io);
 
             while (self.generation_queue.pop()) |chunk| {
-                g.async(io, safeGenerate, .{ chunk, allocator, self });
-                try chunks_to_upload.append(allocator, &chunk.mesh);
+                g.async(io, Chunk.generateTerrain, .{ chunk });
+                try meshes_to_generate.append(allocator, &chunk.mesh);
             }
 
             try g.await(io);
+        } else {
+            return;
         }
+
+        var chunks_to_upload: std.ArrayList(*Chunk.Mesh) = .empty;
+
+        var g: std.Io.Group = .init;
+
+        errdefer g.cancel(io);
+
+        while (meshes_to_generate.pop()) |mesh| {
+            g.async(io, safeGenerate, .{ mesh, allocator, self });
+            try chunks_to_upload.append(allocator, mesh);
+        }
+
+        try g.await(io);
 
         while (chunks_to_upload.pop()) |mesh| {
             mesh.upload();
@@ -355,10 +370,8 @@ pub const Level = struct {
     }
 };
 
-fn safeGenerate(chunk: *Chunk, allocator: std.mem.Allocator, level: *const Level) void {
-    chunk.generateTerrain();
-
-    chunk.mesh.generate(allocator, level) catch |err| {
+fn safeGenerate(mesh: *Chunk.Mesh, allocator: std.mem.Allocator, level: *const Level) void {
+    mesh.generate(allocator, level) catch |err| {
         std.log.err("{}", .{err});
     };
 }
