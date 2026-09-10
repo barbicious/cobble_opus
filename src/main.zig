@@ -5,6 +5,6 @@ pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
 
     var state: State = try .init(allocator, init.io);
-    defer state.deinit();
+    defer state.deinit(allocator);
     try state.run(allocator, init.io);
 }

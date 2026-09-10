@@ -66,9 +66,10 @@ pub const Chunk = struct {
             };
         }
 
-        pub fn deinit(self: *Mesh) void {
+        pub fn deinit(self: *Mesh, allocator: std.mem.Allocator) void {
             c.glDeleteBuffers(1, &self.vbo);
             c.glDeleteVertexArrays(1, &self.vao);
+            self.vertices.deinit(allocator);
         }
 
         pub fn generate(self: *Mesh, allocator: std.mem.Allocator, level: *const Level) !void {
@@ -204,6 +205,10 @@ pub const Chunk = struct {
         chunk.mesh = .init(chunk);
     }
 
+    pub fn deinit(self: *Chunk, allocator: std.mem.Allocator) void {
+        self.mesh.deinit(allocator);
+    }
+
     pub fn generateTerrain(self: *Chunk) void {
         for (0..self.tiles.len) |tile_idx| {
             const x = tile_idx % width;
@@ -279,8 +284,9 @@ pub const Level = struct {
         };
     }
 
-    pub fn deinit(self: *Level) void {
+    pub fn deinit(self: *Level, allocator: std.mem.Allocator) void {
         self.chunks.deinit();
+        self.generation_queue.deinit(allocator);
     }
 
     pub fn crossBoundaries(self: *Level, allocator: std.mem.Allocator, player_pos: Chunk.Position) !void {
@@ -320,6 +326,7 @@ pub const Level = struct {
 
             while (iter.next()) |chunk| {
                 if (chunk.*.flags.dirty) {
+                    chunk.*.deinit(allocator);
                     _ = self.chunks.remove(chunk.*.position);
                 }
             }
@@ -354,11 +361,15 @@ pub const Level = struct {
             try chunks_to_upload.append(allocator, mesh);
         }
 
+        meshes_to_generate.deinit(allocator);
+
         try g.await(io);
 
         while (chunks_to_upload.pop()) |mesh| {
             mesh.upload();
         }
+
+        chunks_to_upload.deinit(allocator);
     }
 
     pub fn blit(self: *const Level) void {

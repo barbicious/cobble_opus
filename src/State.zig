@@ -37,8 +37,8 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io) !State {
     };
 }
 
-pub fn deinit(self: *State) void {
-    self.level.deinit();
+pub fn deinit(self: *State, allocator: std.mem.Allocator) void {
+    self.level.deinit(allocator);
     self.shader.deinit();
     Window.deinit();
 }
