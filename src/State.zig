@@ -75,7 +75,7 @@ pub fn run(self: *State, allocator: std.mem.Allocator, io: std.Io) !void {
 
                 chunk.setTile(tile_x, tile_y, tile_z, .air);
 
-                try self.level.mesh_queue.append(allocator, &chunk.mesh);
+                try self.level.generation_queue.append(allocator, chunk);
 
                 break;
             }

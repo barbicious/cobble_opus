@@ -1,6 +1,19 @@
 const tile = @import("tile.zig");
 const c = @import("c");
 const std = @import("std");
+const fastnoise = @import("fastnoise.zig");
+
+const noise: fastnoise.Noise(f32) = .{
+    .seed = 1337,
+    .noise_type = .cellular,
+    .frequency = 0.05,
+    .gain = 0.40,
+    .fractal_type = .fbm,
+    .lacunarity = 0.80,
+    .cellular_distance = .euclidean,
+    .cellular_return = .distance2,
+    .cellular_jitter_mod = 0.88,
+};
 
 pub const Chunk = struct {
     pub const Position = struct {
@@ -59,18 +72,16 @@ pub const Chunk = struct {
         }
 
         pub fn generate(self: *Mesh, allocator: std.mem.Allocator, level: *const Level) !void {
-            std.log.debug("began mesh gen..", .{});
-
             self.vertices.clearRetainingCapacity();
 
-            const left_chunk = level.chunks.get(self.chunk.relativePosition(1, 0, 0));
-            const right_chunk = level.chunks.get(self.chunk.relativePosition(-1, 0, 0));
+            const left_chunk = level.chunks.get(self.chunk.relativePosition(-1, 0, 0));
+            const right_chunk = level.chunks.get(self.chunk.relativePosition(1, 0, 0));
 
             const up_chunk = level.chunks.get(self.chunk.relativePosition(0, 1, 0));
             const down_chunk = level.chunks.get(self.chunk.relativePosition(0, -1, 0));
 
-            const front_chunk = level.chunks.get(self.chunk.relativePosition(0, 0, 1));
-            const back_chunk = level.chunks.get(self.chunk.relativePosition(0, 0, -1));
+            const front_chunk = level.chunks.get(self.chunk.relativePosition(0, 0, -1));
+            const back_chunk = level.chunks.get(self.chunk.relativePosition(0, 0, 1));
 
             for (0..self.chunk.tiles.len) |tile_idx| {
                 const x = tile_idx % width;
@@ -147,8 +158,6 @@ pub const Chunk = struct {
                     }
                 }
             }
-
-            std.log.debug("completed mesh gen..", .{});
         }
 
         pub fn upload(self: *const Mesh) void {
@@ -191,27 +200,28 @@ pub const Chunk = struct {
         const tiles: [width * height * depth]tile.Tile = [_]tile.Tile{ .air } ** (width * height * depth);
 
         chunk.tiles = tiles;
-
-        for (0..depth) |z| {
-            for (0..width) |x| {
-                for (0..height) |y| {
-                    var tile_type: tile.Tile = .air;
-
-                    const world_height = @as(i32, @intCast(y)) + (position.y * @as(i32, @intCast(height)));
-
-                    if (world_height < 9) {
-                        tile_type = .cobblestone;
-                    } else if (world_height < 10) {
-                        tile_type = .grass;
-                    }
-
-                    chunk.setTile(x, y, z, tile_type);
-                }
-            }
-        }
-
         chunk.position = position;
         chunk.mesh = .init(chunk);
+    }
+
+    pub fn generateTerrain(self: *Chunk) void {
+        for (0..self.tiles.len) |tile_idx| {
+            const x = tile_idx % width;
+            const y = (tile_idx / width) % height;
+            const z = tile_idx / (width * height);
+
+            const world_z = @as(i32, @intCast(z)) + self.position.z * depth;
+            const world_x = @as(i32, @intCast(x)) + self.position.x * width;
+            const world_y = @as(i32, @intCast(y)) + self.position.y * height;
+
+            const value: i32 = @intFromFloat((noise.genNoise2D(@floatFromInt(world_x), @floatFromInt(world_z)) + 1.0) * 16.0 + @as(f32, @floatFromInt(world_y)));
+
+            if (value == 19) {
+                self.setTile(x, y, z, .grass);
+            } else if (value < 19) {
+                self.setTile(x, y, z, .cobblestone);
+            }
+        }
     }
 
     pub inline fn idx(x: usize, y: usize, z: usize) usize {
@@ -243,11 +253,11 @@ pub const Level = struct {
     const render_distance: i8 = 5;
     
     chunks: std.AutoHashMap(Chunk.Position, *Chunk),
-    mesh_queue: std.ArrayList(*Chunk.Mesh),
+    generation_queue: std.ArrayList(*Chunk),
     
     pub fn init(allocator: std.mem.Allocator) !Level {
         var chunks: std.AutoHashMap(Chunk.Position, *Chunk) = .init(allocator);
-        var mesh_queue: std.ArrayList(*Chunk.Mesh) = .empty;
+        var generation_queue: std.ArrayList(*Chunk) = .empty;
 
         var z: i8 = -render_distance;
         while (z <= render_distance) : (z += 1) {
@@ -258,14 +268,14 @@ pub const Level = struct {
                     const chunk = try allocator.create(Chunk);
                     Chunk.init(chunk, .{ .x = x, .y = y, .z = z });
                     try chunks.put(chunk.position, chunk);
-                    try mesh_queue.append(allocator, &chunk.mesh);
+                    try generation_queue.append(allocator, chunk);
                 }
             }
         }
 
         return .{
             .chunks = chunks,
-            .mesh_queue = mesh_queue,
+            .generation_queue = generation_queue,
         };
     }
 
@@ -299,7 +309,7 @@ pub const Level = struct {
                         const chunk = try allocator.create(Chunk);
                         Chunk.init(chunk, .{ .x = x, .y = y, .z = z });
                         try self.chunks.put(chunk.position, chunk);
-                        try self.mesh_queue.append(allocator, &chunk.mesh);
+                        try self.generation_queue.append(allocator, chunk);
                     }
                 }
             }
@@ -318,14 +328,14 @@ pub const Level = struct {
     pub fn doChunkWork(self: *Level, allocator: std.mem.Allocator, io: std.Io) !void {
         var chunks_to_upload: std.ArrayList(*Chunk.Mesh) = .empty;
 
-        if (self.mesh_queue.items.len > 0) {
+        if (self.generation_queue.items.len > 0) {
             var g: std.Io.Group = .init;
 
             errdefer g.cancel(io);
 
-            while (self.mesh_queue.pop()) |mesh| {
-                g.async(io, safeMeshGenerate, .{ mesh, allocator, self });
-                try chunks_to_upload.append(allocator, mesh);
+            while (self.generation_queue.pop()) |chunk| {
+                g.async(io, safeGenerate, .{ chunk, allocator, self });
+                try chunks_to_upload.append(allocator, &chunk.mesh);
             }
 
             try g.await(io);
@@ -345,8 +355,10 @@ pub const Level = struct {
     }
 };
 
-fn safeMeshGenerate(mesh: *Chunk.Mesh, allocator: std.mem.Allocator, level: *const Level) void {
-    mesh.generate(allocator, level) catch |err| {
+fn safeGenerate(chunk: *Chunk, allocator: std.mem.Allocator, level: *const Level) void {
+    chunk.generateTerrain();
+
+    chunk.mesh.generate(allocator, level) catch |err| {
         std.log.err("{}", .{err});
     };
 }
