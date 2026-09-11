@@ -23,6 +23,7 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io) !State {
 
     c.glEnable(c.GL_DEPTH_TEST);
     c.glEnable(c.GL_CULL_FACE);
+    c.glBlendFunc(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
 
     const shader: Shader = try .init(@embedFile("shaders/cube.vert"), @embedFile("shaders/cube.frag"));
 
@@ -104,7 +105,7 @@ pub fn run(self: *State, allocator: std.mem.Allocator, io: std.Io) !void {
         c.glClearColor(0.3, 0.6, 0.85, 1.0);
         c.glClear(c.GL_COLOR_BUFFER_BIT | c.GL_DEPTH_BUFFER_BIT);
 
-        self.level.blit();
+        try self.level.blit(allocator, &self.camera.position);
 
         Window.swapBuffers();
     }

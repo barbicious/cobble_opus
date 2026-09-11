@@ -4,12 +4,14 @@ pub const Tile = enum {
     air,
     grass,
     cobblestone,
+    water,
 
     pub fn uv(self: Tile) struct { f32, f32 } {
         return switch (self) {
             .air => @panic("Air does not have UV coords!"),
             .grass => .{ 0.0, 0.0 },
             .cobblestone => .{ texture_width, 0.0 },
+            .water => .{ texture_width * 2.0, 0.0 }
         };
     }
 };

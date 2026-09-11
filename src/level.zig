@@ -2,6 +2,7 @@ const tile = @import("tile.zig");
 const c = @import("c");
 const std = @import("std");
 const fastnoise = @import("fastnoise.zig");
+const zalgebra = @import("zalgebra");
 
 const noise: fastnoise.Noise(f32) = .{
     .seed = 1337,
@@ -36,7 +37,8 @@ pub const Chunk = struct {
     
     pub const Mesh = struct {
         chunk: *const Chunk,
-        vertices: std.ArrayList(f32),
+        solid_vertices: std.ArrayList(f32),
+        transluscent_vertices: std.ArrayList(f32),
         vao: u32,
         vbo: u32,
 
@@ -60,7 +62,8 @@ pub const Chunk = struct {
 
             return .{
                 .chunk = chunk,
-                .vertices = .empty,
+                .solid_vertices = .empty,
+                .transluscent_vertices = .empty,
                 .vao = vao,
                 .vbo = vbo,
             };
@@ -69,11 +72,13 @@ pub const Chunk = struct {
         pub fn deinit(self: *Mesh, allocator: std.mem.Allocator) void {
             c.glDeleteBuffers(1, &self.vbo);
             c.glDeleteVertexArrays(1, &self.vao);
-            self.vertices.deinit(allocator);
+            self.solid_vertices.deinit(allocator);
+            self.transluscent_vertices.deinit(allocator);
         }
 
         pub fn generate(self: *Mesh, allocator: std.mem.Allocator, level: *const Level) !void {
-            self.vertices.clearRetainingCapacity();
+            self.solid_vertices.clearRetainingCapacity();
+            self.transluscent_vertices.clearRetainingCapacity();
 
             const left_chunk = level.chunks.get(self.chunk.relativePosition(-1, 0, 0));
             const right_chunk = level.chunks.get(self.chunk.relativePosition(1, 0, 0));
@@ -100,61 +105,61 @@ pub const Chunk = struct {
                 const world_z = @as(f32, @floatFromInt(z)) + (@as(f32, @floatFromInt(depth)) * @as(f32, @floatFromInt(self.chunk.position.z)));
 
                 if (x > 0) {
-                    if (self.chunk.isTileTransluscent(x - 1, y, z)) {
+                    if (self.chunk.isTileTransluscent(x - 1, y, z, tile_type)) {
                         try self.addFace(tile_type, .left, world_x, world_y, world_z, allocator);
                     }
                 } else if (left_chunk) |left_c| {
-                    if (left_c.isTileTransluscent(width - 1, y, z)) {
+                    if (left_c.isTileTransluscent(width - 1, y, z, tile_type)) {
                         try self.addFace(tile_type, .left, world_x, world_y, world_z, allocator);
                     }
                 }
 
                 if (x < width - 1) {
-                    if (self.chunk.isTileTransluscent(x + 1, y, z)) {
+                    if (self.chunk.isTileTransluscent(x + 1, y, z, tile_type)) {
                         try self.addFace(tile_type, .right, world_x, world_y, world_z, allocator);
                     }
                 } else if (right_chunk) |right_c| {
-                    if (right_c.isTileTransluscent(0, y, z)) {
+                    if (right_c.isTileTransluscent(0, y, z, tile_type)) {
                         try self.addFace(tile_type, .right, world_x, world_y, world_z, allocator);
                     }
                 }
 
                 if (y > 0) {
-                    if (self.chunk.isTileTransluscent(x, y - 1, z)) {
+                    if (self.chunk.isTileTransluscent(x, y - 1, z, tile_type)) {
                         try self.addFace(tile_type, .bottom, world_x, world_y, world_z, allocator);
                     }
                 } else if (down_chunk) |down_c| {
-                    if (down_c.isTileTransluscent(x, height - 1, z)) {
+                    if (down_c.isTileTransluscent(x, height - 1, z, tile_type)) {
                         try self.addFace(tile_type, .bottom, world_x, world_y, world_z, allocator);
                     }
                 }
 
                 if (y < height - 1) {
-                    if (self.chunk.isTileTransluscent(x, y + 1, z)) {
+                    if (self.chunk.isTileTransluscent(x, y + 1, z, tile_type)) {
                         try self.addFace(tile_type, .top, world_x, world_y, world_z, allocator);
                     }
                 } else if (up_chunk) |up_c| {
-                    if (up_c.isTileTransluscent(x, 0, z)) {
+                    if (up_c.isTileTransluscent(x, 0, z, tile_type)) {
                         try self.addFace(tile_type, .top, world_x, world_y, world_z, allocator);
                     }
                 }
 
                 if (z > 0) {
-                    if (self.chunk.isTileTransluscent(x, y, z - 1)) {
+                    if (self.chunk.isTileTransluscent(x, y, z - 1, tile_type)) {
                         try self.addFace(tile_type, .front, world_x, world_y, world_z, allocator);
                     }
                 } else if (front_chunk) |front_c| {
-                    if (front_c.isTileTransluscent(x, y, depth - 1)) {
+                    if (front_c.isTileTransluscent(x, y, depth - 1, tile_type)) {
                         try self.addFace(tile_type, .front, world_x, world_y, world_z, allocator);
                     }
                 }
 
                 if (z < depth - 1) {
-                    if (self.chunk.isTileTransluscent(x, y, z + 1)) {
+                    if (self.chunk.isTileTransluscent(x, y, z + 1, tile_type)) {
                         try self.addFace(tile_type, .back, world_x, world_y, world_z, allocator);
                     }
                 } else if (back_chunk) |back_c| {
-                    if (back_c.isTileTransluscent(x, y, 0)) {
+                    if (back_c.isTileTransluscent(x, y, 0, tile_type)) {
                         try self.addFace(tile_type, .back, world_x, world_y, world_z, allocator);
                     }
                 }
@@ -168,21 +173,38 @@ pub const Chunk = struct {
             c.glBufferSubData(
                 c.GL_ARRAY_BUFFER,
                 0,
-                @sizeOf(f32) * @as(i64, @intCast(self.vertices.items.len)),
-                self.vertices.items.ptr,
+                @sizeOf(f32) * @as(i64, @intCast(self.solid_vertices.items.len)),
+                self.solid_vertices.items.ptr,
+            );
+
+            c.glBufferSubData(
+                c.GL_ARRAY_BUFFER,
+                @sizeOf(f32) * @as(i64, @intCast(self.solid_vertices.items.len)),
+                @sizeOf(f32) * @as(i64, @intCast(self.transluscent_vertices.items.len)),
+                self.transluscent_vertices.items.ptr,
             );
         }
 
         pub fn addFace(self: *Mesh, tile_type: tile.Tile, face: tile.Face, x: f32, y: f32, z: f32, allocator: std.mem.Allocator) !void {
             const tile_vertices = tile.vertices(tile_type, face, (x), (y), (z));
-            try self.vertices.appendSlice(allocator, tile_vertices[0..]);
+            if (tile_type == .water) {
+                try self.transluscent_vertices.appendSlice(allocator, tile_vertices[0..]);
+            } else {
+                try self.solid_vertices.appendSlice(allocator, tile_vertices[0..]);
+            }
         }
 
         pub fn blit(self: *Mesh) void {
             c.glBindVertexArray(self.vao);
             c.glBindBuffer(c.GL_ARRAY_BUFFER, self.vbo);
 
-            c.glDrawArrays(c.GL_TRIANGLES, 0, @as(i32, @intCast(@divTrunc(self.vertices.items.len, 6))));
+            c.glDisable(c.GL_BLEND);
+
+            c.glDrawArrays(c.GL_TRIANGLES, 0, @as(i32, @intCast(@divTrunc(self.solid_vertices.items.len, 6))));
+
+            c.glEnable(c.GL_BLEND);
+
+            c.glDrawArrays(c.GL_TRIANGLES, @as(i32, @intCast(@divTrunc(self.solid_vertices.items.len, 6))), @as(i32, @intCast(@divTrunc(self.transluscent_vertices.items.len, 6))));
         }
     };
 
@@ -193,7 +215,7 @@ pub const Chunk = struct {
     tiles: [width * height * depth]tile.Tile,
     position: Position,
     mesh: Mesh,
-    flags: struct {
+    flags: packed struct(u1) {
         dirty: bool
     },
 
@@ -221,10 +243,12 @@ pub const Chunk = struct {
 
             const value: i32 = @intFromFloat((noise.genNoise2D(@floatFromInt(world_x), @floatFromInt(world_z)) + 1.0) * 16.0 + @as(f32, @floatFromInt(world_y)));
 
-            if (value == 19) {
+            if (value == 24) {
                 self.setTile(x, y, z, .grass);
-            } else if (value < 19) {
+            } else if (value < 24) {
                 self.setTile(x, y, z, .cobblestone);
+            } else if (world_y < 6) {
+                self.setTile(x, y, z, .water);
             }
         }
     }
@@ -241,8 +265,9 @@ pub const Chunk = struct {
         self.tiles[Chunk.idx(x, y, z)] = placed_tile;
     }
 
-    pub inline fn isTileTransluscent(self: *const Chunk, x: usize, y: usize, z: usize) bool {
-        return self.tileAt(x, y, z) == .air;
+    pub inline fn isTileTransluscent(self: *const Chunk, x: usize, y: usize, z: usize, current_tile: tile.Tile) bool {
+        const checked_tile = self.tileAt(x, y, z);
+        return checked_tile == .air or (checked_tile == .water and current_tile != .water);
     }
 
     inline fn relativePosition(self: *const Chunk, ox: i32, oy: i32, oz: i32) Position {
@@ -372,11 +397,35 @@ pub const Level = struct {
         chunks_to_upload.deinit(allocator);
     }
 
-    pub fn blit(self: *const Level) void {
-        var iter = self.chunks.valueIterator();
+    pub fn blit(self: *const Level, allocator: std.mem.Allocator, camera_position: *const zalgebra.Vec3) !void {
+        var chunk_list: std.ArrayList(*Chunk) = .empty;
 
+        var iter = self.chunks.valueIterator();
         while (iter.next()) |chunk| {
-            chunk.*.mesh.blit();
+            try chunk_list.append(allocator, chunk.*);
+        }
+
+        std.mem.sort(*Chunk, chunk_list.items, camera_position, struct {
+            fn lessThan(camera: *const zalgebra.Vec3, a: *Chunk, b: *Chunk) bool {
+                const a_position = zalgebra.Vec3.fromSlice(&[_]f32{
+                    @floatFromInt((a.position.x) * Chunk.width + 8),
+                    @floatFromInt((a.position.y) * Chunk.height + 8),
+                    @floatFromInt((a.position.z) * Chunk.depth + 8),
+                });
+
+                const b_position = zalgebra.Vec3.fromSlice(&[_]f32{
+                    @floatFromInt((b.position.x) * Chunk.width + 8),
+                    @floatFromInt((b.position.y) * Chunk.height + 8),
+                    @floatFromInt((b.position.z) * Chunk.depth + 8),
+                });
+
+                return b_position.sub(camera.*).length()
+                    < a_position.sub(camera.*).length();
+            }
+        }.lessThan);
+
+        for (chunk_list.items) |chunk| {
+            chunk.mesh.blit();
         }
     }
 };
